@@ -1,13 +1,10 @@
 import requests
 from bs4 import BeautifulSoup
 
-# Base URL of the shop site
 base_url = 'https://scrapeme.live/shop/'
 
-# Send a GET request to the main shop page
 response = requests.get(base_url)
 
-# Check if the request was successful
 if response.status_code == 200:
     # Parse the HTML content
     soup = BeautifulSoup(response.text, 'html.parser')
@@ -15,7 +12,6 @@ if response.status_code == 200:
     # Find all product containers
     products = soup.find_all('li', class_='product')
 
-    # List to store product details
     product_details = []
 
     # Loop through each product to get the link
@@ -38,8 +34,9 @@ if response.status_code == 200:
             # Extract Price
             price = product_soup.find('p', class_='price').text.strip()
             
-            # Store the details
+           
             product_details.append({
+                'url': product_link,
                 'title': title,
                 'description': description,
                 'price': price
@@ -47,11 +44,14 @@ if response.status_code == 200:
         else:
             print(f'Failed to retrieve product page: {product_link}. Status code: {product_response.status_code}')
     
-    # Print all product details
+    
     for detail in product_details:
+        print(f'URL: {detail["url"]}')
         print(f'Title: {detail["title"]}')
         print(f'Description: {detail["description"]}')
         print(f'Price: {detail["price"]}')
         print('---')
+    print("Anzahl Shopseiten:", len(product_details))
+
 else:
     print(f'Failed to retrieve the shop page. Status code: {response.status_code}')
