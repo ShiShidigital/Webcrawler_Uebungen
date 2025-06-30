@@ -1,5 +1,4 @@
 import scrapy
-from lxml import html
 
 class ShopMultipageSpider(scrapy.Spider):
     name = 'shopMultipage'
