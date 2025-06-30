@@ -8,7 +8,7 @@ def main():
     # firefox_options.headless = True # im hintergrund ohne GUI
 
     # Initialisierung
-    driver = webdriver.Firefox(executable_path=GeckoDriverManager().install(), options=firefox_options)
+    driver = webdriver.Firefox(service=webdriver.FirefoxService(executable_path=GeckoDriverManager().install()), options=firefox_options)
 
     try:
         # Webseite öffnen
