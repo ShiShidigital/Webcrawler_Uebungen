@@ -3,6 +3,8 @@ from bs4 import BeautifulSoup
 import json
 import time
 from html import unescape
+from markdownify import markdownify as md
+
 
 # Basis-URL der API
 base_url = "https://verbund.edeka/api/v2/career/vacancies"
@@ -52,13 +54,13 @@ def extract_description_from_html(html_content):
                     description = json_data.get('description')
                     # print(description)
                     description = unescape(description)
-                    return description.strip()
+                    return md(description.strip())
                     
         
         # Fallback: Suchen nach einem spezifischen HTML-Tag, falls notwendig
         description_tag = soup.find("div", {"class": "job-description"})  # Beispieleingabe
         if description_tag:
-            return description_tag.get_text(strip=True)
+            return md(description_tag.get_text(strip=True))
 
         return "Keine Beschreibung gefunden"
     
@@ -77,7 +79,7 @@ while True:
     # time.sleep(1) # rate limit
 
     # URL für die aktuelle Seite
-    url = f"{base_url}?page={page}&size=50"
+    url = f"{base_url}?page={page}&size=20"
     
     # Anfrage an die API senden
     response = requests.get(url)
@@ -123,6 +125,7 @@ while True:
 
         # Seite erhöhen, um auf die nächste zu gehen
         page += 1
+        break
     else:
         print(f"Fehler bei der Anfrage auf Seite {page}: {response.status_code}")
         break
