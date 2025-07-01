@@ -1,0 +1,7 @@
+url: job.URL,
+department: "N/A", // Set as N/A, adjust if department info becomes available
+description: job.description,
+job_title: job.title,
+level: "None", // As per previous structure
+location: job.locationsText,
+schedule: job.timeType || "None"
