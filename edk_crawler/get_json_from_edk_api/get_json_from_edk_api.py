@@ -76,10 +76,10 @@ all_jobs_details = []
 page = 0  # Start mit der ersten Seite
 while True:
     print(f"Start collecting from page: {page}")
-    # time.sleep(1) # rate limit
+    time.sleep(1) # rate limit
 
     # URL für die aktuelle Seite
-    url = f"{base_url}?page={page}&size=20"
+    url = f"{base_url}?page={page}&size=50"
     
     # Anfrage an die API senden
     response = requests.get(url)
@@ -125,7 +125,8 @@ while True:
 
         # Seite erhöhen, um auf die nächste zu gehen
         page += 1
-        break
+        if page == 20:
+            break
     else:
         print(f"Fehler bei der Anfrage auf Seite {page}: {response.status_code}")
         break
@@ -133,9 +134,13 @@ while True:
 
 # Die extrahierten Job-Daten in eine JSON-Datei schreiben
 print("Start Scraping ...")
-json_file = 'job_details.json'
+start_time = time.time()
+
+json_file = 'edk_job_1000.json'
 with open(json_file, 'w', encoding='utf-8') as f:
     print("Open file:", json_file)
     json.dump(all_jobs_details, f, ensure_ascii=False, indent=4)
 
-print("Alle Jobdetails wurden erfolgreich in 'job_details.json' gespeichert!")
+print(f"Alle Jobdetails wurden erfolgreich in {json_file} gespeichert!")
+end_time = time.time() 
+print(f"Programm did run for {(end_time - start_time):.6f} seconds") # does not work

@@ -1,5 +1,6 @@
 import json
 import csv
+import time
 
 # Function to clean and format the Markdown text for CSV
 def clean_markdown(text):
@@ -24,6 +25,7 @@ def json_to_csv(json_file, csv_file):
 
     # Write to CSV file
     with open(csv_file, 'w', newline='', encoding='utf-8') as f:
+        print(f"Start writing data from {json_file} to {csv_file}...")
         writer = csv.DictWriter(f, fieldnames=headers)
         writer.writeheader()  # Write the header
         
@@ -36,8 +38,12 @@ def json_to_csv(json_file, csv_file):
     print(f"Data successfully written to {csv_file}")
 
 # Specify the input JSON file and output CSV file
-json_file = 'job_details.json'  # Change this to your JSON file path
-csv_file = 'job_details.csv'      # Desired output CSV file name
+json_file = 'edk_job_1000.json'  # Change this to your JSON file path
+csv_file = 'edk_jobs_1000.csv'      # Desired output CSV file name
 
 # Call the function to convert JSON to CSV
+start_time = time.time()
 json_to_csv(json_file, csv_file)
+end_time = time.time()
+
+print(f"Programm did run for {(end_time - start_time):.6f} seconds")
