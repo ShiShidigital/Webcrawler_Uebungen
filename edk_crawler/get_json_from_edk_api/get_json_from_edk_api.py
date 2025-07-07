@@ -5,6 +5,9 @@ import time
 from html import unescape
 from markdownify import markdownify as md
 import logging 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+
 
 # Format Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,8 +25,11 @@ class EdkJobScraper:
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
     PAGE_SIZE = 50
-    REQUEST_DELAY_SECONDS = 1
+    REQUEST_DELAY_SECONDS = 0.2
+    MAX_CONCURRENT_DETAIL_REQUESTS =30  # gleichzeitige Detailanfragen (Threads), evtl ändern
 
+    # Semaphore, um die anzahl der gleichzeitig aktiven HTTP-Anfragen zu begrenzen
+    _request_semaphore = threading.Semaphore(MAX_CONCURRENT_DETAIL_REQUESTS)
 
     # Konstruktor
     def __init__(self, output_json_filename='edk_job_data.json'):
@@ -31,13 +37,20 @@ class EdkJobScraper:
         self.all_jobs_details = []
 
 
-    def _make_request(self, url, method="GET", params=None):
+    def _make_request(self, url, method="GET", params=None, delay=False, use_semaphore=False):
         """
-        Private Helfermethode zum senden der HTTP-Anfragen. Fehlerbehandlung
+        Private Helfermethode zum senden der HTTP-Anfragen. Fehlerbehandlung.
+        :param delay: Wenn True, wird REQUEST_DELAY_SECONDS angewendet.
+        :param use_semaphore: Wenn True, wird das Request-Semaphore verwendet
         """
-        try:
+        if delay:
             time.sleep(self.REQUEST_DELAY_SECONDS)
-            # flexibler für GET/POST
+
+        # Get a Token from Semaphore, wait if all Tokens are taken.
+        if use_semaphore:
+            self._request_semaphore.acquire() # Token nehmen
+
+        try:
             response = requests.request(method, url, headers=self.HEADERS, params=params, timeout=10)
             response.raise_for_status()  # Wirft automatisch Fehler
             response.encoding = 'utf-8'
@@ -53,10 +66,14 @@ class EdkJobScraper:
         except requests.exceptions.RequestException as e:
             # Fängt alle anderen Fehler ab
             logging.error(f"Allgemeiner Fehler bei Anfrage an {url}: {e}")
+        finally:
+            # Immer Token freigeben
+            if use_semaphore:
+                self._request_semaphore.release()
         return None 
 
 
-    def extract_job_summary(self, job_data):
+    def _extract_job_summary(self, job_data):
         """
         Extrahiert die Zusammenfassung der Jobdetails aus den API-Daten.
         """
@@ -124,6 +141,29 @@ class EdkJobScraper:
             return "Fehler beim Abrufen der Beschreibung"
 
 
+    def _process_job_detail(self, job_summary):
+        """
+        Wird von den Threads parallel ausgeführt
+        """
+        original_title = job_summary.get('job_title', 'Unbekannt')
+        job_url = job_summary.get('url')
+
+        if job_url:
+            # Verwendung der Semaphore für Detailanfrage
+            logging.debug(f"Hole Beschreibung für: {original_title} ({job_url}")
+            detail_response = self._make_request(job_url, use_semaphore=True)
+
+            if detail_response:
+                job_summary['description'] = self._extract_description_from_html(detail_response.text)
+            else:
+                job_summary['description'] = "Fehler: Detailseite nicht abrufbar."
+        else:
+            logging.warning(f"Job '{original_title}' hat keine Detail-URL.")
+            job_summary['description'] = "Keine JobURL verfügbar."
+        
+        return job_summary
+
+
     def fetch_all_jobs(self):
         """
         Startet den Hauptprozess des Job-Scrapings.
@@ -131,12 +171,16 @@ class EdkJobScraper:
         page = 0
         logging.info("Starte Job-Scraping-Prozess...")
 
+        logging.getLogger().setLevel(logging.INFO) # Setzt INFO Level für allgeimene Logs
+        # logging.getLogger().setLevel(logging.DEBUG) # Setzt DEBUG Level für detailiertere Logs
+        
+
         while True:
             # URL für die aktuelle Seite
             url = f"{self.BASE_API_URL}?page={page}&size={self.PAGE_SIZE}"
             logging.info(f"Sammle Daten von Seite: {page} (URL: {url})")
 
-            response = self._make_request(url)
+            response = self._make_request(url, delay=True)
 
             if response is None:  # Prüfen, ob Error
                 logging.error(f"Fehler beim Abrufen der Seite {page}. Abbruch")
@@ -147,42 +191,33 @@ class EdkJobScraper:
                 logging.error(f"Fehler beim Parsen der JSON-Antwort von Seite {page}: {e} - Kein gültiges JSON?")
                 break
 
-
             entries = job_data.get('entries')  
             
             if not entries:
                 logging.info(f"Keine weiteren Jobs auf Seite {page} gefunden. Beende das Scrapen.")
                 break
 
-            current_page_jobs = []
-            for job in entries:
-                # Extrahierte Details für jeden Job hinzufügen
-                job_info = self.extract_job_summary(job)
-                job_url = job_info.get('url')
-                # print(job_url)
+            # Batch-Verarbeitung der Detailseiten mit ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=self.MAX_CONCURRENT_DETAIL_REQUESTS) as executor:
+                job_summaries_to_process = [self._extract_job_summary(job) for job in entries]
 
-                # Überprüfung, ob die URL valide ist
-                if job_url:
-                    logging.info(f"Hole Details für: {job_info['job_title']} ({job_url})")
-                    detail_response = self._make_request(job_url)
+                # Sende Aufgaben an den Executor
+                futures = {executor.submit(self._process_job_detail, job_summary): job_summary for job_summary in job_summaries_to_process}
 
-                    if detail_response:
-                        job_info['description'] = self._extract_description_from_html(detail_response.text)
-                    else:
-                        job_info['description'] = "Fehler beim Abrufen der JobSeite"
-                else:
-                    logging.warning(f"Job '{job_info.get('job_title', 'Unbekannt')}' hat keine Jobseiten URL")
-                    job_info['description'] = "Keine Job-URL vorhanden"
+                # Warte auf die Ergebnisse
+                for future in as_completed(futures):
+                    original_job_summary = futures[future]
+                    try:
+                        updated_job_summary = future.result()
+                        self.all_jobs_details.append(updated_job_summary)
+                    except Exception as e:
+                        logging.error(f"Job-Beschreibung Verarbeitung für '{original_job_summary('job_title', 'Unbekannt')}' Fehler: {e}")
 
-                current_page_jobs.append(job_info)
-
-            self.all_jobs_details.extend(current_page_jobs)
             logging.info(f"Bisher gesammelte Jobs: {len(self.all_jobs_details)}")
 
             page += 1
-
             # TESTLAUF!!! Raus nehmen im Betrieb!
-            if page >= 1:
+            if page >= 20:
                 logging.info(f"Test-Limit erreicht. Beende Scrapen.")
                 break
 
