@@ -30,6 +30,7 @@ class EdkJobScraper:
         self.output_json_filename = output_json_filename
         self.all_jobs_details = []
 
+
     def _make_request(self, url, method="GET", params=None):
         """
         Private Helfermethode zum senden der HTTP-Anfragen. Fehlerbehandlung
@@ -39,6 +40,7 @@ class EdkJobScraper:
             # flexibler für GET/POST
             response = requests.request(method, url, headers=self.HEADERS, params=params, timeout=10)
             response.raise_for_status()  # Wirft automatisch Fehler
+            response.encoding = 'utf-8'
             return response
         
         except requests.exceptions.HTTPError as e:
@@ -79,10 +81,13 @@ class EdkJobScraper:
     
     def _extract_description_from_html(self, html_content):
         """
-        Extraktion der JobBeschreibung aus dem HTML-String
+        Extraktion der JobBeschreibung aus dem HTML-String, 
+        Verbesserte Mardown-Ausgabe + Zeichenkodierung
         """
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
+
+            description_text = "Keine detaillierte Beschreibung gefunden"
 
             # 1. Versuch JSON-LD
             script = soup.find('script', type='application/ld+json')
@@ -91,13 +96,13 @@ class EdkJobScraper:
                 try:
                     json_data = json.loads(script.string)
                     # print(json_data)
-
                     # Prüfe, ob der Typ JobPosting ist
                     if json_data.get('@type') == 'JobPosting':
                         description = json_data.get('description')
                         # print(description)
                         if description:
-                            return md(unescape(description).strip())
+                            description_text = md(unescape(description), heading_style="ATX", strong_em_with_underscores=False, wrap=True).strip()
+                            return description_text
                 except json.JSONDecodeError as e:
                     logging.warning(f"Fehler beim parsen von JSON-LD: {e}")
                 except Exception as e:
@@ -106,7 +111,9 @@ class EdkJobScraper:
             #2. Fallback: Suche nach einem spezifischen Div
             description_div = soup.find("div", {"class": "job-description"})  # Beispieleingabe
             if description_div:
-                return md(description_div.get_text(strip=True))
+                raw_html_from_div = str(description_div)
+                description_text = md(unescape(raw_html_from_div), heading_style="ATX", strong_em_with_underscores=False, wrap=True).strip()
+                return description_text
 
             # Wenn beides fehlschlägt
             logging.warning("Keine Jobbeschreibung gefunden.")
