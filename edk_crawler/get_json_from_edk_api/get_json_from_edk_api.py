@@ -182,7 +182,7 @@ class EdkJobScraper:
             page += 1
 
             # TESTLAUF!!! Raus nehmen im Betrieb!
-            if page >= 2:
+            if page >= 1:
                 logging.info(f"Test-Limit erreicht. Beende Scrapen.")
                 break
 
