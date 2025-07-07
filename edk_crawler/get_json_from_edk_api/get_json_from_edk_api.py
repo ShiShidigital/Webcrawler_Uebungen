@@ -4,143 +4,208 @@ import json
 import time
 from html import unescape
 from markdownify import markdownify as md
+import logging 
+
+# Format Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-# Basis-URL der API
-base_url = "https://verbund.edeka/api/v2/career/vacancies"
+class EdkJobScraper:
+    """ 
+    Klasse zum Scrapen von Jobangebten der Edeka Verbund API.
+    """
 
-# Statische Liste der weiteren HTTP-Header, falls nötig (z. B. User-Agent)
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-}
-
-# Funktion zur Extraktion der gewünschten Job-Details
-def extract_job_details(job):
-    return {
-        "url": job.get("detailPageUrl"),
-        "department": job.get("companyName"),  # Department-Information als "N/A", anpassen, wenn verfügbar
-        "description": None,
-        "job_title": job.get("title"),
-        "level": "None",  # Basierend auf der vorherigen Struktur
-        "location": [job.get("locationName"), 
-                     job.get("locationStreet"),
-                     job.get("locationZipCode"), 
-                     job.get("locationCity")],  # Als String bereits angegeben
-        "schedule": job.get("timeType") or "None"  # Default zu "None", wenn 'timeType' nicht vorhanden
+    # Konstanten
+    BASE_API_URL = "https://verbund.edeka/api/v2/career/vacancies"
+    # Statische Liste der weiteren HTTP-Header, falls nötig (z. B. User-Agent)
+    HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
     }
+    PAGE_SIZE = 50
+    REQUEST_DELAY_SECONDS = 1
 
-# Jobbeschreibungen
-# Funktion zur Extraktion der Beschreibung aus dem HTML-String
-def extract_description_from_html(html_content):
-    try:
-        description_tag = None
 
-        # Suche nach JSON-Daten im HTML
-        soup = BeautifulSoup(html_content, 'html.parser')
-        script = soup.find('script', type='application/ld+json')
-        # print("Found Script:", script)
+    # Konstruktor
+    def __init__(self, output_json_filename='edk_job_data.json'):
+        self.output_json_filename = output_json_filename
+        self.all_jobs_details = []
 
-        if script:
-            # print("Found JSON-LD script")
-            script_content = script.string
-            # print(f"Script content: {script_content}")
-            if script_content:
-                # Parsing der JSON-Struktur
-                json_data = json.loads(script_content)
-                # print(json_data)
-                
-                # Prüfe, ob der Typ JobPosting ist
-                if json_data.get('@type') == 'JobPosting':
-                    description = json_data.get('description')
-                    # print(description)
-                    description = unescape(description)
-                    return md(description.strip())
-                    
+    def _make_request(self, url, method="GET", params=None):
+        """
+        Private Helfermethode zum senden der HTTP-Anfragen. Fehlerbehandlung
+        """
+        try:
+            time.sleep(self.REQUEST_DELAY_SECONDS)
+            # flexibler für GET/POST
+            response = requests.request(method, url, headers=self.HEADERS, params=params, timeout=10)
+            response.raise_for_status()  # Wirft automatisch Fehler
+            return response
         
-        # Fallback: Suchen nach einem spezifischen HTML-Tag, falls notwendig
-        description_tag = soup.find("div", {"class": "job-description"})  # Beispieleingabe
-        if description_tag:
-            return md(description_tag.get_text(strip=True))
+        except requests.exceptions.HTTPError as e:
+            # Fehler mit logging protokollieren anstatt mit print()
+            logging.error(f"HTTP Fehler bei {url}: {e.response.status_code} - {e.response.text}")
+        except requests.exceptions.ConnectionError as e:
+            logging.error(f"Verbindungsfehler bei {url}: {e}")
+        except requests.exceptions.Timeout as e:
+            logging.error(f"Timeoit bei {url}: {e}")
+        except requests.exceptions.RequestException as e:
+            # Fängt alle anderen Fehler ab
+            logging.error(f"Allgemeiner Fehler bei Anfrage an {url}: {e}")
+        return None 
 
-        return "Keine Beschreibung gefunden"
+
+    def extract_job_summary(self, job_data):
+        """
+        Extrahiert die Zusammenfassung der Jobdetails aus den API-Daten.
+        """
+        location_parts = [
+            job_data.get("locationName", "N/A"),
+            job_data.get("locationStreet", ""),
+            job_data.get("locationZipCode", ""), 
+            job_data.get("locationCity", "")
+        ]
+        location = ", ".join(filter(None, location_parts)).strip()
+
+        return {
+            "url": job_data.get("detailPageUrl"),
+            "department": job_data.get("companyName", "N/A"), 
+            "description": None,
+            "job_title": job_data.get("title", "Kein Title vorhanden"),
+            "level": job_data.get("level", "Unbestimmt"), 
+            "location": location,
+            "schedule": job_data.get("timeType", "Vollzeit/Teilzeit")
+        }
+
     
-    except Exception as e:
-        print(f"Error while extracting description: {e}")
-        return "Fehler beim Abrufen der Beschreibung"
+    def _extract_description_from_html(self, html_content):
+        """
+        Extraktion der JobBeschreibung aus dem HTML-String
+        """
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
 
+            # 1. Versuch JSON-LD
+            script = soup.find('script', type='application/ld+json')
+            # print("Found Script:", script)
+            if script and script.string:
+                try:
+                    json_data = json.loads(script.string)
+                    # print(json_data)
 
+                    # Prüfe, ob der Typ JobPosting ist
+                    if json_data.get('@type') == 'JobPosting':
+                        description = json_data.get('description')
+                        # print(description)
+                        if description:
+                            return md(unescape(description).strip())
+                except json.JSONDecodeError as e:
+                    logging.warning(f"Fehler beim parsen von JSON-LD: {e}")
+                except Exception as e:
+                    logging.warning(f"Allgemeiner Fehler beim Verarbeiten von JSON-LD: {e}")
 
-# Liste zur Sammlung aller extrahierten Job-Details
-all_jobs_details = []
+            #2. Fallback: Suche nach einem spezifischen Div
+            description_div = soup.find("div", {"class": "job-description"})  # Beispieleingabe
+            if description_div:
+                return md(description_div.get_text(strip=True))
 
-page = 0  # Start mit der ersten Seite
-while True:
-    print(f"Start collecting from page: {page}")
-    time.sleep(1) # rate limit
-
-    # URL für die aktuelle Seite
-    url = f"{base_url}?page={page}&size=50"
-    
-    # Anfrage an die API senden
-    response = requests.get(url)
-
-    # Prüfen, ob die Anfrage erfolgreich war
-    if response.status_code == 200:
-        # print("Connection is there...")
-        job_data = response.json()
-
-        # Überprüfen, ob Jobs im aktuellen Batch vorhanden sind
-        content = job_data.get('entries')  # Vorausgesetzt, die Jobs sind in 'content'
-        # print("Content is there...")
+            # Wenn beides fehlschlägt
+            logging.warning("Keine Jobbeschreibung gefunden.")
+            return "Keine Beschreibung gefunden"
         
-        if content:
-            temp_jobs = []
+        except Exception as e:
+            logging.warning(f"Error while extracting description: {e}")
+            return "Fehler beim Abrufen der Beschreibung"
 
-            for job in content:
+
+    def fetch_all_jobs(self):
+        """
+        Startet den Hauptprozess des Job-Scrapings.
+        """
+        page = 0
+        logging.info("Starte Job-Scraping-Prozess...")
+
+        while True:
+            # URL für die aktuelle Seite
+            url = f"{self.BASE_API_URL}?page={page}&size={self.PAGE_SIZE}"
+            logging.info(f"Sammle Daten von Seite: {page} (URL: {url})")
+
+            response = self._make_request(url)
+
+            if response is None:  # Prüfen, ob Error
+                logging.error(f"Fehler beim Abrufen der Seite {page}. Abbruch")
+
+            try:    # TEST ob wirklich JSON zurück kommt
+                job_data = response.json()
+            except json.JSONDecodeError as e:
+                logging.error(f"Fehler beim Parsen der JSON-Antwort von Seite {page}: {e} - Kein gültiges JSON?")
+                break
+
+
+            entries = job_data.get('entries')  
+            
+            if not entries:
+                logging.info(f"Keine weiteren Jobs auf Seite {page} gefunden. Beende das Scrapen.")
+                break
+
+            current_page_jobs = []
+            for job in entries:
                 # Extrahierte Details für jeden Job hinzufügen
-                job_info = extract_job_details(job)
+                job_info = self.extract_job_summary(job)
                 job_url = job_info.get('url')
                 # print(job_url)
 
                 # Überprüfung, ob die URL valide ist
                 if job_url:
-                    job_page_response = requests.get(job_url, headers=headers)
-                    # print(job_page_response.status_code)
-                    if job_page_response.status_code == 200:
-                        job_info['description'] = extract_description_from_html(job_page_response.text)
+                    logging.info(f"Hole Details für: {job_info['job_title']} ({job_url})")
+                    detail_response = self._make_request(job_url)
+
+                    if detail_response:
+                        job_info['description'] = self._extract_description_from_html(detail_response.text)
                     else:
-                        job_info['description'] = f"Fehler beim Abrufen der Seite: {job_page_response.status_code}"
+                        job_info['description'] = "Fehler beim Abrufen der JobSeite"
                 else:
-                    job_info['description'] = "Keine URL vorhanden"
+                    logging.warning(f"Job '{job_info.get('job_title', 'Unbekannt')}' hat keine Jobseiten URL")
+                    job_info['description'] = "Keine Job-URL vorhanden"
 
-                temp_jobs.append(job_info)
+                current_page_jobs.append(job_info)
 
-            all_jobs_details.extend(temp_jobs)
-            print(f"Total jobs collected: {len(all_jobs_details)}")
+            self.all_jobs_details.extend(current_page_jobs)
+            logging.info(f"Bisher gesammelte Jobs: {len(self.all_jobs_details)}")
 
+            page += 1
 
-        else:
-            # Keine Inhalte mehr, kannst die Schleife sicher beenden
-            break
+            # TESTLAUF!!! Raus nehmen im Betrieb!
+            if page >= 2:
+                logging.info(f"Test-Limit erreicht. Beende Scrapen.")
+                break
 
-        # Seite erhöhen, um auf die nächste zu gehen
-        page += 1
-        if page == 20:
-            break
-    else:
-        print(f"Fehler bei der Anfrage auf Seite {page}: {response.status_code}")
-        break
+        logging.info(f"Scraping beendet. Insgesamt {len(self.all_jobs_details)} Jobs gesammelt.")
 
 
-# Die extrahierten Job-Daten in eine JSON-Datei schreiben
-print("Start Scraping ...")
-start_time = time.time()
+    def save_to_json(self):
+        if not self.all_jobs_details: # Prüfen ob Daten gesammelt wurden
+            logging.warning("Keine Jobdaten zum Speichern vorhanden.")
+            return 
+        
+        try:
+            with open(self.output_json_filename, 'w', encoding='utf-8') as f:
+                json.dump(self.all_jobs_details, f, ensure_ascii=False, indent=4)
+            logging.info(f"Alle Jobdetails wurden erfolgreich in {self.output_json_filename} gespeichert!")
+        except IOError as e:
+            logging.error(f"Fehler beim speichern der Datei '{self.output_json_filename}': {e}")
 
-json_file = 'edk_job_1000.json'
-with open(json_file, 'w', encoding='utf-8') as f:
-    print("Open file:", json_file)
-    json.dump(all_jobs_details, f, ensure_ascii=False, indent=4)
 
-print(f"Alle Jobdetails wurden erfolgreich in {json_file} gespeichert!")
-end_time = time.time() 
-print(f"Programm did run for {(end_time - start_time):.6f} seconds") # does not work
+if __name__ == "__main__":
+    start_time = time.time()
+    logging.info("Programm Start")
+
+    scraper = EdkJobScraper()
+
+    # Starte Hauptprozess
+    scraper.fetch_all_jobs()
+    # Daten speichern
+    scraper.save_to_json()
+
+    end_time = time.time()
+    duration = end_time - start_time
+    logging.info(f"Programm beenet. Laufzeit: {duration:.2f} Sekunden.")
