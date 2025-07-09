@@ -78,6 +78,7 @@ async def import_jobs(job_list_data: List[EdekaJob]): # Hier wird das Pydantic-M
         # - Überprüfung auf Duplikate
         # - Weitere Verarbeitung, z.B. Indexierung für eine Suche
         
+        # logging.info(f"DEBUGGING DESCRIPTION for job '{job_data.job_title}':\n---START---\n{job_data.description}\n---ENDE---")
         # Für diese Übung: Füge den Job einfach zu unserem simulierten Speicher hinzu
         _imported_jobs_storage.append(job_data.dict()) # .dict() konvertiert Pydantic-Modell zurück in ein Python-Dictionary
         imported_count += 1

@@ -1,3 +1,4 @@
+# get_json_from_edk_api.py
 import requests
 from bs4 import BeautifulSoup
 import json
@@ -50,19 +51,22 @@ class EdkJobScraper:
         if use_semaphore:
             self._request_semaphore.acquire() # Token nehmen
 
+        response = None
         try:
-            response = requests.request(method, url, headers=self.HEADERS, params=params, timeout=10)
+            response = requests.request(method, url, headers=self.HEADERS, params=params, timeout=30)
             response.raise_for_status()  # Wirft automatisch Fehler
-            response.encoding = 'utf-8'
-            return response
+            response.encoding = 'utf-8' # Umlaute
+            return response     # Erfolgreiche Antwort
         
         except requests.exceptions.HTTPError as e:
             # Fehler mit logging protokollieren anstatt mit print()
-            logging.error(f"HTTP Fehler bei {url}: {e.response.status_code} - {e.response.text}")
+            status_code = e.response.status_code if e.response else 'N/A'
+            response_text = e.response.text if e.response else 'N/A'
+            logging.error(f"HTTP Fehler bei {url}: Status: {status_code} -Text:  {response_text}")
         except requests.exceptions.ConnectionError as e:
             logging.error(f"Verbindungsfehler bei {url}: {e}")
         except requests.exceptions.Timeout as e:
-            logging.error(f"Timeoit bei {url}: {e}")
+            logging.error(f"Timeout bei {url}: {e}")
         except requests.exceptions.RequestException as e:
             # Fängt alle anderen Fehler ab
             logging.error(f"Allgemeiner Fehler bei Anfrage an {url}: {e}")
@@ -70,7 +74,8 @@ class EdkJobScraper:
             # Immer Token freigeben
             if use_semaphore:
                 self._request_semaphore.release()
-        return None 
+
+        return response # Wenn Fehler, dann none
 
 
     def _extract_job_summary(self, job_data):
@@ -89,7 +94,7 @@ class EdkJobScraper:
             "url": job_data.get("detailPageUrl"),
             "department": job_data.get("companyName", "N/A"), 
             "description": None,
-            "job_title": job_data.get("title", "Kein Title vorhanden"),
+            "job_title": job_data.get("title", "Kein Titel vorhanden"),
             "level": job_data.get("level", "Unbestimmt"), 
             "location": location,
             "schedule": job_data.get("timeType", "Vollzeit/Teilzeit")
@@ -150,7 +155,7 @@ class EdkJobScraper:
 
         if job_url:
             # Verwendung der Semaphore für Detailanfrage
-            logging.debug(f"Hole Beschreibung für: {original_title} ({job_url}")
+            logging.debug(f"Hole Beschreibung für: {original_title} ({job_url})")
             detail_response = self._make_request(job_url, use_semaphore=True)
 
             if detail_response:
@@ -184,6 +189,7 @@ class EdkJobScraper:
 
             if response is None:  # Prüfen, ob Error
                 logging.error(f"Fehler beim Abrufen der Seite {page}. Abbruch")
+                break
 
             try:    # TEST ob wirklich JSON zurück kommt
                 job_data = response.json()
@@ -192,7 +198,6 @@ class EdkJobScraper:
                 break
 
             entries = job_data.get('entries')  
-            
             if not entries:
                 logging.info(f"Keine weiteren Jobs auf Seite {page} gefunden. Beende das Scrapen.")
                 break
@@ -211,15 +216,15 @@ class EdkJobScraper:
                         updated_job_summary = future.result()
                         self.all_jobs_details.append(updated_job_summary)
                     except Exception as e:
-                        logging.error(f"Job-Beschreibung Verarbeitung für '{original_job_summary('job_title', 'Unbekannt')}' Fehler: {e}")
+                        logging.error(f"Job-Beschreibung Verarbeitung für '{original_job_summary.get('job_title', 'Unbekannt')}' Fehler: {e}", exc_info=True)
 
             logging.info(f"Bisher gesammelte Jobs: {len(self.all_jobs_details)}")
 
             page += 1
             # TESTLAUF!!! Raus nehmen im Betrieb!
-            if page >= 20:
-                logging.info(f"Test-Limit erreicht. Beende Scrapen.")
-                break
+            # if page >= 20:
+            #    logging.info(f"Test-Limit erreicht. Beende Scrapen.")
+            #    break
 
         logging.info(f"Scraping beendet. Insgesamt {len(self.all_jobs_details)} Jobs gesammelt.")
 
@@ -250,4 +255,4 @@ if __name__ == "__main__":
 
     end_time = time.time()
     duration = end_time - start_time
-    logging.info(f"Programm beenet. Laufzeit: {duration:.2f} Sekunden.")
+    logging.info(f"Programm beendet. Laufzeit: {duration:.2f} Sekunden.")
