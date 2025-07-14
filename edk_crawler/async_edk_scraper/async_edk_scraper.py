@@ -242,9 +242,39 @@ class AsyncEdekaJobScraper:
 
                 page += 1
                 # TESTLIMIT --- 
-                if page >= 20: 
+                if page >= 1000: 
                     logging.info(f"Test-Limit erreicht. Beende Scrapen.")
                     break
+
+    def save_failed_details(self, filename='failed_job_details.json'):
+        """
+        Speichert die Liste der fehlgeschlagenen Detail-Anfragen in einer JSON-Datei.
+        """
+        if not self.failed_details:
+            logging.info("Keine fehlgeschlagenen Detailseiten zum Speichern gefunden.")
+            return
+        
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(self.failed_details, f, ensure_ascii=False, indent=4)
+            logging.info(f"Fehlgeschlagene Detailseiten erfolgreich in '{filename}' gespeichert!")
+        except IOError as e:
+            logging.error(f"Fehler beim Speichern der Datei '{filename}': {e}")
+            
+    def save_missed_descriptions(self, filename='missed_descriptions.json'):
+        """
+        Speichert die Liste der Jobs, bei denen die Beschreibung nicht gefunden/extrahiert werden konnte.
+        """
+        if not self.missed_descriptions:
+            logging.info("Keine Jobs mit fehlenden Beschreibungen zum Speichern gefunden.")
+            return
+
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                json.dump(self.missed_descriptions, f, ensure_ascii=False, indent=4)
+            logging.info(f"Jobs mit fehlenden Beschreibungen erfolgreich in '{filename}' gespeichert!")
+        except IOError as e:
+            logging.error(f"Fehler beim Speichern der Datei '{filename}': {e}")
 
 
     def save_to_json(self):
@@ -272,6 +302,9 @@ if __name__ == "__main__":
     asyncio.run(scraper.fetch_all_jobs()) # Startet die asynchrone Hauptfunktion
 
     scraper.save_to_json() # Speichert die Daten synchron
+    scraper.save_failed_details() # NEU: Fehlgeschlagene Detailanfragen speichern
+    scraper.save_missed_descriptions() # NEU: Fehlende/fehlerhafte Beschreibungen speichern
+
 
     end_time = time.time()
     duration = end_time - start_time
