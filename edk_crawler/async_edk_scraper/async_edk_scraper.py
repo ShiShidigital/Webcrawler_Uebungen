@@ -1,6 +1,7 @@
 # async_scraper.py
 
 import asyncio
+from typing import Optional
 import httpx 
 from bs4 import BeautifulSoup
 import json 
@@ -42,11 +43,15 @@ class AsyncEdekaJobScraper:
         self.output_json_filename = output_json_filename
         self.all_jobs_details = []
         self._request_semaphore = asyncio.Semaphore(self.MAX_CONCURRENT_DETAIL_REQUESTS)
+        self.failed_details = []    # Seiten mit Fehlern
+        self.missed_descriptions = []   # Jobs ohne Beschreibung
+
 
     async def _make_request(self, client: httpx.AsyncClient, url: str, method: str = "GET", params: dict = None,
-                            delay: bool = False, use_semaphore: bool = False) -> httpx.Response:
+                            delay: bool = False, use_semaphore: bool = False, job_meta_data: Optional[dict] = None) -> httpx.Response:
         """
         Asynchrone Helferfunktion zum Senden von HTTP-Anfragen.
+        : param job_meta_data: Metadaten des Jobs, falls Detailanfrage für Fehlerprotokollierung
         """
         if delay:
             await asyncio.sleep(self.API_LIST_REQUEST_DELAY_SECONDS)
@@ -60,14 +65,22 @@ class AsyncEdekaJobScraper:
             response.raise_for_status()
             response.encoding = 'utf-8'
             return response
+        
         except httpx.HTTPStatusError as e:
-            status_code = e.response.status_code if e.response else 'N/A'
-            response_text = e.response.text if e.response else 'N/A'
-            logging.error(f"HTTP Fehler bei {url}: Status {status_code} - Text: {response_text}")
+            error_msg = f"HTTP Fehler bei {url}: Status {e.response.status_code} - Text: {e.response.text}"
+            logging.error(error_msg)
+            if job_meta_data:
+                self.failed_details.append({"url": url, "job_title": job_meta_data.get('job_title', 'N/A'), "error": error_msg, "type": "HTTP_STATUS_ERROR"})
         except httpx.RequestError as e:
-            logging.error(f"Request Fehler bei {url}: {e}")
+            error_msg = f"Request Fehler bei {url}: {e}"
+            logging.error(error_msg)
+            if job_meta_data:
+                self.failed_jobs.append({"url": url, "job_title": job_meta_data.get('job_title', 'N/A'), "error": error_msg, "type": "REQUEST_ERROR"})
         except Exception as e: # Fängt allgemeine Fehler ab
-            logging.error(f"Unerwarteter Fehler bei Anfrage an {url}: {e}", exc_info=True)
+            error_msg = f"Unerwarteter Fehler bei Anfrage an {url}: {e}"
+            logging.error(error_msg, exc_info=True)
+            if job_meta_data:
+                self.failed_jobs.append({"url": url, "job_title": job_meta_data.get('job_title', 'N/A'), "error": error_msg, "type": "UNEXPECTED_ERROR"})
         finally:
             if use_semaphore: # Semaphore immer freigeben
                 self._request_semaphore.release()
@@ -99,7 +112,7 @@ class AsyncEdekaJobScraper:
         }
     
 
-    def _extract_description_from_html(self, html_content: str) -> str:
+    def _extract_description_from_html(self, html_content: str, job_meta_data: Optional[dict] = None) -> str:
         """
         Extraktion der JobBeschreibung aus dem HTML-String.
         Wandelt HTML in reines Markdown um.
@@ -107,6 +120,7 @@ class AsyncEdekaJobScraper:
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
 
+            description_found = False
             description_text = "Keine detaillierte Beschreibung gefunden."
 
             # 1. Versuch JSON-LD
@@ -123,6 +137,7 @@ class AsyncEdekaJobScraper:
                                 strong_em_with_underscores=False,
                                 wrap=True
                             ).strip() # .strip() entfernt führende/hintere Whitespaces
+                            description_found = True
                             return md_content
                 except json.JSONDecodeError as e:
                     logging.warning(f"Fehler beim Parsen von JSON-LD: {e}")
@@ -138,14 +153,25 @@ class AsyncEdekaJobScraper:
                     strong_em_with_underscores=False,
                     wrap=True
                 ).strip()
+                description_found = True
                 return md_content
 
             logging.warning("Keine Jobbeschreibung gefunden.")
             return "Keine Beschreibung gefunden."
 
         except Exception as e:
-            logging.error(f"Fehler beim Extrahieren der Beschreibung: {e}", exc_info=True)
-            return "Fehler beim Abrufen der Beschreibung."
+            error_msg = f"Fehler beim Extrahieren der Beschreibung: {e}"
+            logging.error(error_msg, exc_info=True)
+            description_text = "Fehler beim Abrufen der Beschreibung."
+            if job_meta_data:
+                self.missed_descriptions.append({"url": job_meta_data.get('url', 'N/A'), "job_title": job_meta_data.get('job_title', 'N/A'), "error": error_msg, "type": "DESCRIPTION_EXTRACTION_ERROR"})
+
+            return description_text
+        finally:
+            # Keine Beschreibung aber auch kein Fehler
+            if not description_found and job_meta_data and description_text == "Keine Beschreibung gefunden.":
+                self.missed_descriptions.append({"url": job_meta_data.get('url', 'N/A'), "job_title": job_meta_data.get('job_title', 'N/A'), "error": "Beschreibung nicht im HTML gefunden-", "type": "DESCRIPTION_NOT_FOUND"})
+
         
     async def _process_job_detail(self, client: httpx.AsyncClient, job_summary: dict) -> dict:
         """
@@ -154,20 +180,26 @@ class AsyncEdekaJobScraper:
         original_title = job_summary.get('job_title', 'Unbekannt')
         job_url = job_summary.get('url')
 
+        job_meta_data_for_error_logging = {k: v for k, v in job_summary.items() if k in ['job_title', 'url']}
+
         if job_url:
             logging.debug(f"Hole Beschreibung für: {original_title} ({job_url})")
-            detail_response = await self._make_request(client, job_url, use_semaphore=True)
+            detail_response = await self._make_request(client, job_url, use_semaphore=True, job_meta_data=job_meta_data_for_error_logging)
 
             if detail_response:
-                job_summary['description'] = self._extract_description_from_html(detail_response.text)
+                job_summary['description'] = self._extract_description_from_html(detail_response.text, job_meta_data_for_error_logging)
             else:
                 job_summary['description'] = "Fehler: Detailseite nicht abrufbar."
         else:
             logging.warning(f"Job '{original_title}' hat keine Detail-URL.")
             job_summary['description'] = "Keine JobURL verfügbar."
+            
+            # Fehlerprotokollierung 
+            self.failed_details.append({"url": "N/A", "job_title": original_title, "error": "Keine Seiten-URL vorhanden.", "type": "MISSING_URL"})
         
         return job_summary
-    
+
+
     async def fetch_all_jobs(self):
         """
         Startet den Hauptprozess des Job-Scrapings asynchron.
